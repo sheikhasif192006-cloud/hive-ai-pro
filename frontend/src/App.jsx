@@ -7,6 +7,7 @@ import {
   Eye, Save, Play, Download
 } from 'lucide-react';
 import ThreeDViewer from './components/ThreeDViewer';
+import AuthModal from './components/AuthModal';
 
 const translations = {
   en: { name: "English", prepare: "Prepare", slicer: "Slicer", labs: "HIVE LABS", import: "IMPORT", stats: "Statistics", tools: "PREMIUM", coins: "HIVE COINS", pro_msg: "Better than Chitubox Pro.", get_pro: "GET PRO", status: "Status", weight: "Weight", volume: "Volume", cost: "Print Cost", share: "Share", community: "Community", earn: "Refer" },
@@ -27,28 +28,36 @@ function App() {
 
   const t = translations[lang] || translations['en'];
 
-  // Auto-login Stub for Dev
+  // Auth Logic
   React.useEffect(() => {
-    const loginTempUser = async () => {
-      try {
-        const res = await axios.post(`${import.meta.env.VITE_API_URL}/api/auth/temp`, {
-          email: 'testuser@hive.ai',
-          name: 'Designer X'
-        });
-        setUser(res.data);
-        setCredits(res.data.credits);
-      } catch (err) { console.error("Login failed", err); }
+    const checkAuth = async () => {
+      const token = localStorage.getItem('hive_token');
+      if (token) {
+        try {
+          const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          setUser(res.data);
+          setCredits(res.data.credits);
+        } catch (err) {
+          localStorage.removeItem('hive_token');
+        }
+      }
     };
-    loginTempUser();
+    checkAuth();
   }, []);
 
+  const getHeaders = () => ({
+    headers: { Authorization: `Bearer ${localStorage.getItem('hive_token')}` }
+  });
+
   const handlePayment = async (plan) => {
-    if (!user) return alert("Please login first!");
+    if (!user) return setIsAuthOpen(true);
 
     try {
       const { data: order } = await axios.post(`${import.meta.env.VITE_API_URL}/api/payments/order`, {
         amount: plan.price,
-      });
+      }, getHeaders());
 
       const options = {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID,
@@ -61,9 +70,9 @@ function App() {
           try {
             const verifyRes = await axios.post(`${import.meta.env.VITE_API_URL}/api/payments/verify`, {
               ...response,
-              userId: user._id,
-              creditsToAdd: plan.coins
-            });
+              creditsToAdd: plan.coins,
+              amount: plan.price * 100
+            }, getHeaders());
             setCredits(verifyRes.data.credits);
             setIsPaymentOpen(false);
             alert("🔥 Payment Successful! HIVE COINS Added.");
@@ -87,7 +96,7 @@ function App() {
   };
 
   const performTask = async (taskName, cost) => {
-    if (!user) return alert("Please login first!");
+    if (!user) return setIsAuthOpen(true);
     if (credits < cost) {
       setIsPaymentOpen(true);
       return;
@@ -96,19 +105,38 @@ function App() {
     setStatus(`Processing ${taskName}...`);
     try {
       const { data } = await axios.post(`${import.meta.env.VITE_API_URL}/task`, {
-        userId: user._id,
         taskName,
-        cost
-      });
+        cost,
+        imageUrl: 'https://raw.githubusercontent.com/meshyai/meshy-python/main/docs/assets/demo_image.png' // Default for now
+      }, getHeaders());
       
       setCredits(data.remainingCredits);
-      setStatus(data.status);
       
-      // Simulate completion after backend delay
-      setTimeout(() => {
+      if (data.status === 'processing') {
+        // Start Polling
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await axios.get(`${import.meta.env.VITE_API_URL}/task/status/${data.taskId}`, getHeaders());
+            if (statusRes.data.status === 'succeeded') {
+              clearInterval(pollInterval);
+              setStatus('Ready');
+              if (statusRes.data.resultUrl) {
+                setFileUrl(statusRes.data.resultUrl); // Auto-load the result
+              }
+              alert(`✅ ${taskName} Completed!`);
+            } else if (statusRes.data.status === 'failed') {
+              clearInterval(pollInterval);
+              setStatus('Task Failed');
+              alert(`❌ ${taskName} Failed.`);
+            }
+          } catch (err) {
+            clearInterval(pollInterval);
+          }
+        }, 5000);
+      } else {
         setStatus('Ready');
         alert(`✅ ${taskName} Completed!`);
-      }, data.estimatedTime ? parseFloat(data.estimatedTime) * 1000 : 2000);
+      }
 
     } catch (err) {
       setStatus('Task Failed');
@@ -153,7 +181,20 @@ function App() {
             <Activity size={14} className="text-[#00ff88]" />
             <span className="text-[10px] font-black uppercase tracking-widest text-white">{status}</span>
           </div>
-          <button onClick={() => setIsAuthOpen(true)} className="flex items-center gap-2 bg-transparent border border-[#00ff88] px-6 py-2 rounded-full text-[#00ff88] hover:bg-[#00ff88] hover:text-black transition-all text-[10px] font-black uppercase italic tracking-widest cyber-glow">
+          <button 
+            onClick={() => {
+              if (user) {
+                if (window.confirm("Terminate Neural Link (Logout)?")) {
+                  localStorage.removeItem('hive_token');
+                  setUser(null);
+                  setCredits(0);
+                }
+              } else {
+                setIsAuthOpen(true);
+              }
+            }} 
+            className="flex items-center gap-2 bg-transparent border border-[#00ff88] px-6 py-2 rounded-full text-[#00ff88] hover:bg-[#00ff88] hover:text-black transition-all text-[10px] font-black uppercase italic tracking-widest cyber-glow"
+          >
              <User size={14} /> {user ? user.name : 'Login'}
           </button>
         </div>
@@ -298,6 +339,13 @@ function App() {
           <span>0.050mm</span>
         </div>
       </footer>
+
+      <AuthModal 
+        isOpen={isAuthOpen} 
+        onClose={() => setIsAuthOpen(false)} 
+        setUser={setUser} 
+        setCredits={setCredits} 
+      />
 
       {/* PAYMENT MODAL */}
       {isPaymentOpen && (
